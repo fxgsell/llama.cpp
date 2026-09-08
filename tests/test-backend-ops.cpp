@@ -3874,6 +3874,48 @@ struct test_add_rms_norm : public test_case {
     }
 };
 
+// GGML_OP_RMS_NORM + GGML_OP_SCALE (fused operation), the gated delta net q/k normalization
+struct test_rms_norm_scale : public test_case {
+    const ggml_type type;
+    const std::array<int64_t, 4> ne;
+    const float eps;
+    const float scale;
+    const float bias; // a nonzero bias must not fuse
+
+    std::string op_desc(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        return "RMS_NORM_SCALE";
+    }
+
+    bool run_whole_graph() override { return true; }
+
+    std::string vars() override {
+        return VARS_TO_STR5(type, ne, eps, scale, bias);
+    }
+
+    test_rms_norm_scale(ggml_type type = GGML_TYPE_F32,
+            std::array<int64_t, 4> ne = {128, 16, 4, 2},
+            float eps = 1e-6f, float scale = 0.0883883476f, float bias = 0.0f)
+        : type(type), ne(ne), eps(eps), scale(scale), bias(bias) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * a = ggml_new_tensor(ctx, type, 4, ne.data());
+        ggml_set_name(a, "a");
+
+        ggml_tensor * out = ggml_rms_norm(ctx, a, eps);
+        out = bias == 0.0f ? ggml_scale(ctx, out, scale) : ggml_scale_bias(ctx, out, scale, bias);
+        ggml_set_name(out, "out");
+
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
+            init_tensor_uniform(t, -10.f, 10.f);
+        }
+    }
+};
+
 // GGML_OP_UNARY(RELU) + GGML_OP_SQR (fused operation)
 struct test_relu_sqr : public test_case {
     const ggml_type type;
@@ -9584,6 +9626,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_add_add(GGML_TYPE_F16, GGML_TYPE_F32, { n, 5, 4, 3 }, false, false));
         test_cases.emplace_back(new test_add_add(GGML_TYPE_F16, GGML_TYPE_F32, { n, 5, 4, 3 }, true, false));
     }
+
+    // the gated delta net q/k normalization: scale(rms_norm(x, eps/n), 1/sqrt(n))
+    for (int64_t n : { 128, 1024 }) {
+        test_cases.emplace_back(new test_rms_norm_scale(GGML_TYPE_F32, { n, 16, 4, 2 }, 1e-6f/n, 1.0f/sqrtf(n)));
+    }
+    // must not fuse
+    test_cases.emplace_back(new test_rms_norm_scale(GGML_TYPE_F32, { 128, 16, 4, 2 }, 1e-6f, 0.5f, 1.0f));
 
     test_cases.emplace_back(new test_rms_norm_mul_add(GGML_TYPE_F32, { 1536, 1, 1, 1 }, 1e-6f, false, false, true));
     test_cases.emplace_back(new test_rms_norm_mul_add(GGML_TYPE_F32, { 256, 4, 1, 1 }, 1e-6f, false, false, true));
